@@ -8,7 +8,7 @@
 streamlit run app.py
 ```
 
-Streamlit Community Cloud에서 이 저장소를 연결할 때는 Main file path를 `ship_public/app.py`로 지정하세요.
+Streamlit Community Cloud에서 이 저장소를 연결할 때는 Main file path를 `app.py`로 지정하세요.
 
 ## 포함된 것
 
@@ -16,6 +16,7 @@ Streamlit Community Cloud에서 이 저장소를 연결할 때는 Main file path
 - `ship_order_summary.csv`: 정적 수주 데이터
 - `ship_order_targets.csv`: 정적 수주목표 데이터
 - `ship_market_cap.csv`: 정적 시가총액 데이터
+- `update_orders.py`: GitHub Actions에서 실행하는 DART 수주내역 업데이트 코드
 
 ## 포함하지 않는 것
 
@@ -38,7 +39,7 @@ ADMIN_PASSWORD = "원하는_관리자_비밀번호"
 
 공개 사이트 이용자는 원본 CSV를 변경할 수 없습니다.
 
-GitHub Actions가 매일 KST 11:30, 16:00, 20:00에 DART 수주내역을 갱신한 뒤 공개용 CSV만 다시 커밋하도록 구성되어 있습니다.
+GitHub Actions가 평일 월~금 KST 11:30, 16:00, 20:00에 DART 수주내역을 갱신한 뒤 공개용 CSV만 다시 커밋하도록 구성되어 있습니다.
 
 GitHub repository의 Settings > Secrets and variables > Actions > Repository secrets에 아래 값을 등록하세요.
 
@@ -56,6 +57,5 @@ DART_API_KEY=발급받은_DART_API_KEY
 
 ```bash
 export DART_API_KEY="발급받은_DART_API_KEY"
-python ship/ship_order.py --tasks orders --no-dashboard
-python ship_public/sync_public_data.py
+python update_orders.py --tasks orders --no-dashboard
 ```

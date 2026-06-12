@@ -1,0 +1,45 @@
+name: Update Ship Orders
+
+on:
+  schedule:
+    # KST weekdays 11:30, 16:00, 20:00
+    - cron: "30 2 * * 1-5"
+    - cron: "0 7 * * 1-5"
+    - cron: "0 11 * * 1-5"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  update-orders:
+    runs-on: ubuntu-latest
+    env:
+      DART_API_KEY: ${{ secrets.DART_API_KEY }}
+      PYTHONUTF8: "1"
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install update dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements-update.txt
+
+      - name: Validate DART API key
+        run: test -n "$DART_API_KEY"
+
+      - name: Update DART order data
+        run: python update_orders.py --tasks orders --no-dashboard
+
+      - name: Commit updated data
+        uses: stefanzweifel/git-auto-commit-action@v5
+        with:
+          commit_message: "Update ship order data"
+          file_pattern: "ship_order_summary.csv ship_order_targets.csv"
