@@ -233,6 +233,13 @@ ORDER_KEYWORDS = [
     "공급계약"
 ]
 
+EXCLUDED_ORDER_RECEIPTS = {
+    # Old non-ship legacy projects pulled in by later correction filings.
+    # These distort the ship order/backlog dashboard when the view starts from 2020.
+    "20130805800023",  # Construction of Shuqaiq Steam Power Plant
+    "20141112800082",  # Nasr Full Field Development Package 2
+}
+
 PARENT_COMPANY_WITH_SUBSIDIARIES = "HD한국조선해양"
 COMPANY_NAME_ALIASES = {
     "현대중공업(주)": "HD현대중공업",
@@ -661,6 +668,14 @@ def extract_receipt_no_from_url(url):
     return match.group(1) if match else ""
 
 
+def order_receipt_no(row):
+    return row.get("접수번호") or row.get("rcept_no") or extract_receipt_no_from_url(row.get("DART_URL", ""))
+
+
+def is_excluded_order_row(row):
+    return order_receipt_no(row) in EXCLUDED_ORDER_RECEIPTS
+
+
 def normalize_correction_urls(urls):
     url_list = [
         url.strip()
@@ -891,6 +906,8 @@ def load_existing_rows(path, columns):
         reader = csv.DictReader(f)
         for row in reader:
             cleaned = {col: row.get(col, "") for col in columns}
+            if is_excluded_order_row(cleaned):
+                continue
             if "매출구분" in columns and not cleaned.get("매출구분"):
                 cleaned["매출구분"] = "전체"
             cleaned["공시일"] = normalize_storage_date(cleaned.get("공시일", ""))
@@ -917,6 +934,8 @@ def disclosure_key(row):
 def merge_order_rows(existing_rows, new_rows):
     merged = {}
     for row in existing_rows + new_rows:
+        if is_excluded_order_row(row):
+            continue
         normalized = row.copy()
         if not normalized.get("매출구분"):
             normalized["매출구분"] = "전체"
@@ -3509,6 +3528,8 @@ def add_missing_original_rows(results, corrections):
             report_nm = compact_text(filing["report_nm"])
             rcept_no = filing["rcept_no"]
 
+            if rcept_no in EXCLUDED_ORDER_RECEIPTS:
+                continue
             if rcept_no in existing_receipts:
                 continue
             if is_correction_filing(report_nm) or is_termination_filing(report_nm):
@@ -4219,6 +4240,8 @@ def collect_orders_and_targets(corp_rows, companies):
             report_nm = compact_text(row["report_nm"])
             rcept_no = row["rcept_no"]
 
+            if rcept_no in EXCLUDED_ORDER_RECEIPTS:
+                continue
             if is_target_report(report_nm):
                 if company == PARENT_COMPANY_WITH_SUBSIDIARIES and "자회사의 주요경영사항" not in report_nm:
                     continue

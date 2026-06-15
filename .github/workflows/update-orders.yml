@@ -17,6 +17,7 @@ jobs:
     env:
       DART_API_KEY: ${{ secrets.DART_API_KEY }}
       PYTHONUTF8: "1"
+      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
 
     steps:
       - name: Checkout
@@ -33,7 +34,11 @@ jobs:
           pip install -r requirements-update.txt
 
       - name: Validate DART API key
-        run: test -n "$DART_API_KEY"
+        run: |
+          if [ -z "$DART_API_KEY" ]; then
+            echo "::error title=Missing DART_API_KEY::Repository secret DART_API_KEY is not set. Add it in Settings > Secrets and variables > Actions > Repository secrets."
+            exit 1
+          fi
 
       - name: Update DART order data
         run: python update_orders.py --tasks orders --no-dashboard
