@@ -32,6 +32,11 @@ BACKLOG_PERIOD_FREQ = {
     "분기별": "Q",
     "연도별": "Y",
 }
+PERIOD_DELTA_PREFIX = {
+    "월별": "전월대비",
+    "분기별": "전분기대비",
+    "연도별": "전년대비",
+}
 
 
 st.set_page_config(
@@ -377,6 +382,32 @@ def metric_value(value, suffix="", decimals=1):
     if pd.isna(value):
         return "-"
     return f"{value:,.{decimals}f}{suffix}"
+
+
+def metric_delta_pct(current, previous, period_label):
+    current = pd.to_numeric(pd.Series([current]), errors="coerce").iloc[0]
+    previous = pd.to_numeric(pd.Series([previous]), errors="coerce").iloc[0]
+    if pd.isna(current) or pd.isna(previous) or previous == 0:
+        return None
+    prefix = PERIOD_DELTA_PREFIX.get(period_label, "직전대비")
+    return f"{prefix} {(current - previous) / abs(previous) * 100:+,.1f}%"
+
+
+def latest_previous_slices(data, date_col="기간_말일"):
+    if data.empty or date_col not in data.columns:
+        return data.iloc[0:0], data.iloc[0:0]
+    ordered = sorted(pd.to_datetime(data[date_col], errors="coerce").dropna().unique())
+    if not ordered:
+        return data.iloc[0:0], data.iloc[0:0]
+    latest = ordered[-1]
+    previous = ordered[-2] if len(ordered) >= 2 else None
+    latest_slice = data[pd.to_datetime(data[date_col], errors="coerce").eq(latest)]
+    previous_slice = (
+        data[pd.to_datetime(data[date_col], errors="coerce").eq(previous)]
+        if previous is not None
+        else data.iloc[0:0]
+    )
+    return latest_slice, previous_slice
 
 
 def render_metrics(container, data):
@@ -961,12 +992,29 @@ with tab_backlog:
     if backlog.empty:
         st.warning("선택한 조건에 해당하는 수주잔고가 없습니다.")
     else:
-        latest_period = backlog["기간_말일"].max()
-        latest_backlog = backlog[backlog["기간_말일"].eq(latest_period)]
+        latest_backlog, previous_backlog = latest_previous_slices(backlog)
+        latest_ships = latest_backlog["수주_선박수"].sum()
+        previous_ships = previous_backlog["수주_선박수"].sum() if not previous_backlog.empty else pd.NA
+        latest_amount = latest_backlog["계약금액_조원"].sum()
+        previous_amount = previous_backlog["계약금액_조원"].sum() if not previous_backlog.empty else pd.NA
+        latest_contracts = latest_backlog["수주건수"].sum()
+        previous_contracts = previous_backlog["수주건수"].sum() if not previous_backlog.empty else pd.NA
         backlog_cols = st.columns(3)
-        backlog_cols[0].metric("최근 기준 잔고 선박 수", metric_value(latest_backlog["수주_선박수"].sum(), "척", 0))
-        backlog_cols[1].metric("최근 기준 잔고 금액", metric_value(latest_backlog["계약금액_조원"].sum(), "조원", 2))
-        backlog_cols[2].metric("최근 기준 잔고 계약 수", f"{latest_backlog['수주건수'].sum():,.0f}건")
+        backlog_cols[0].metric(
+            "최근 기준 잔고 선박 수",
+            metric_value(latest_ships, "척", 0),
+            delta=metric_delta_pct(latest_ships, previous_ships, period_label),
+        )
+        backlog_cols[1].metric(
+            "최근 기준 잔고 금액",
+            metric_value(latest_amount, "조원", 2),
+            delta=metric_delta_pct(latest_amount, previous_amount, period_label),
+        )
+        backlog_cols[2].metric(
+            "최근 기준 잔고 계약 수",
+            f"{latest_contracts:,.0f}건",
+            delta=metric_delta_pct(latest_contracts, previous_contracts, period_label),
+        )
 
         backlog_company = (
             backlog.groupby(["기간", "기간_말일", "회사"], dropna=False)
@@ -1104,27 +1152,40 @@ with tab_backlog:
             if market_cap_compare.empty:
                 st.info("선택한 기간과 회사에 맞는 시가총액 데이터가 없습니다.")
             else:
-                latest_market_cap_compare = market_cap_compare[
-                    market_cap_compare["기간_말일"].eq(market_cap_compare["기간_말일"].max())
-                ]
+                latest_market_cap_compare, previous_market_cap_compare = latest_previous_slices(market_cap_compare)
+                latest_total_market_cap = latest_market_cap_compare["시가총액_조원"].sum(skipna=True)
+                previous_total_market_cap = (
+                    previous_market_cap_compare["시가총액_조원"].sum(skipna=True)
+                    if not previous_market_cap_compare.empty
+                    else pd.NA
+                )
+                latest_total_backlog = latest_market_cap_compare["잔고_계약금액_조원"].sum(skipna=True)
+                previous_total_backlog = (
+                    previous_market_cap_compare["잔고_계약금액_조원"].sum(skipna=True)
+                    if not previous_market_cap_compare.empty
+                    else pd.NA
+                )
+                latest_ratio = latest_total_market_cap / latest_total_backlog if latest_total_backlog else pd.NA
+                previous_ratio = (
+                    previous_total_market_cap / previous_total_backlog
+                    if not pd.isna(previous_total_backlog) and previous_total_backlog
+                    else pd.NA
+                )
                 ratio_cols = st.columns(3)
                 ratio_cols[0].metric(
                     "최근 기준 시가총액",
-                    metric_value(latest_market_cap_compare["시가총액_조원"].sum(skipna=True), "조원", 2),
+                    metric_value(latest_total_market_cap, "조원", 2),
+                    delta=metric_delta_pct(latest_total_market_cap, previous_total_market_cap, period_label),
                 )
                 ratio_cols[1].metric(
                     "최근 기준 수주잔고",
-                    metric_value(latest_market_cap_compare["잔고_계약금액_조원"].sum(skipna=True), "조원", 2),
+                    metric_value(latest_total_backlog, "조원", 2),
+                    delta=metric_delta_pct(latest_total_backlog, previous_total_backlog, period_label),
                 )
-                latest_total_backlog = latest_market_cap_compare["잔고_계약금액_조원"].sum(skipna=True)
-                latest_total_market_cap = latest_market_cap_compare["시가총액_조원"].sum(skipna=True)
                 ratio_cols[2].metric(
                     "시총 / 수주잔고",
-                    metric_value(
-                        latest_total_market_cap / latest_total_backlog if latest_total_backlog else pd.NA,
-                        "배",
-                        2,
-                    ),
+                    metric_value(latest_ratio, "배", 2),
+                    delta=metric_delta_pct(latest_ratio, previous_ratio, period_label),
                 )
 
                 market_cap_period_order = market_cap_compare["기간"].drop_duplicates().tolist()
