@@ -393,6 +393,40 @@ def metric_delta_pct(current, previous, period_label):
     return f"{prefix} {(current - previous) / abs(previous) * 100:+,.1f}%"
 
 
+def metric_delta_display(current, previous, period_label):
+    current = pd.to_numeric(pd.Series([current]), errors="coerce").iloc[0]
+    previous = pd.to_numeric(pd.Series([previous]), errors="coerce").iloc[0]
+    if pd.isna(current) or pd.isna(previous) or previous == 0:
+        return None
+    change = (current - previous) / abs(previous) * 100
+    prefix = PERIOD_DELTA_PREFIX.get(period_label, "직전대비")
+    if change > 0:
+        return {"text": f"↑ {prefix} +{change:,.1f}%", "color": "#d93025", "bg": "#fde8e7"}
+    if change < 0:
+        return {"text": f"↓ {prefix} {change:,.1f}%", "color": "#1a73e8", "bg": "#e8f0fe"}
+    return {"text": f"→ {prefix} +0.0%", "color": "#5f6368", "bg": "#f1f3f4"}
+
+
+def render_colored_metric(column, label, value, delta=None):
+    delta_html = ""
+    if delta:
+        delta_html = (
+            f"<span style=\"display:inline-block;margin-top:0.75rem;padding:0.25rem 0.55rem;"
+            f"border-radius:999px;background:{delta['bg']};color:{delta['color']};"
+            f"font-size:0.95rem;font-weight:700;\">{delta['text']}</span>"
+        )
+    column.markdown(
+        f"""
+        <div style="padding:0.15rem 0 1.05rem 0;">
+            <div style="font-size:1.05rem;font-weight:700;color:#31333f;margin-bottom:0.55rem;">{label}</div>
+            <div style="font-size:3.05rem;line-height:1.1;font-weight:500;color:#31333f;">{value}</div>
+            {delta_html}
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
 def latest_previous_slices(data, date_col="기간_말일"):
     if data.empty or date_col not in data.columns:
         return data.iloc[0:0], data.iloc[0:0]
@@ -410,7 +444,52 @@ def latest_previous_slices(data, date_col="기간_말일"):
     return latest_slice, previous_slice
 
 
-def render_metrics(container, data):
+def latest_period_metric_delta(data, value_col, period_col, period_label, agg="sum"):
+    if data.empty or not period_col or period_col not in data.columns or value_col not in data.columns:
+        return None
+    period_data = data[[period_col, value_col]].copy()
+    period_data[value_col] = pd.to_numeric(period_data[value_col], errors="coerce")
+    period_data = period_data[period_data[period_col].notna()]
+    if period_data.empty:
+        return None
+    if agg == "count":
+        grouped = period_data.groupby(period_col, dropna=False).size().sort_index()
+    else:
+        grouped = period_data.groupby(period_col, dropna=False)[value_col].sum(min_count=1).sort_index()
+    if len(grouped) < 2:
+        return None
+    return metric_delta_pct(grouped.iloc[-1], grouped.iloc[-2], period_label)
+
+
+def latest_period_avg_delta(data, numerator_col, denominator_col, period_col, period_label):
+    if (
+        data.empty
+        or not period_col
+        or period_col not in data.columns
+        or numerator_col not in data.columns
+        or denominator_col not in data.columns
+    ):
+        return None
+    period_data = data[[period_col, numerator_col, denominator_col]].copy()
+    period_data[numerator_col] = pd.to_numeric(period_data[numerator_col], errors="coerce")
+    period_data[denominator_col] = pd.to_numeric(period_data[denominator_col], errors="coerce")
+    period_data = period_data[period_data[period_col].notna()]
+    if period_data.empty:
+        return None
+    grouped = (
+        period_data.groupby(period_col, dropna=False)
+        .agg(numerator=(numerator_col, "sum"), denominator=(denominator_col, "sum"))
+        .sort_index()
+    )
+    grouped["avg"] = grouped["numerator"] / grouped["denominator"]
+    grouped.loc[grouped["denominator"].le(0), "avg"] = pd.NA
+    grouped = grouped[grouped["avg"].notna()]
+    if len(grouped) < 2:
+        return None
+    return metric_delta_pct(grouped["avg"].iloc[-1], grouped["avg"].iloc[-2], period_label)
+
+
+def render_metrics(container, data, period_col=None, period_label=None):
     total_orders = len(data)
     total_ships = data["최종_수주_선박수"].sum(skipna=True)
     total_amount = data["계약금액_조원"].sum(skipna=True)
@@ -733,8 +812,10 @@ period_label = st.segmented_control(
 )
 period_col, period_sort_col = PERIOD_OPTIONS[period_label]
 backlog_start_date = pd.Timestamp(start_date).normalize()
+backlog_kpi_end_date = pd.Timestamp(end_date).normalize()
 backlog_end_date = pd.Timestamp(end_date).normalize() + pd.DateOffset(years=BACKLOG_HORIZON_YEARS)
 selected_periods = period_rows(backlog_start_date.date(), backlog_end_date.date(), period_label)
+kpi_periods = period_rows(backlog_start_date.date(), backlog_kpi_end_date.date(), period_label)
 
 summary = aggregate(overview_view, [period_sort_col, period_col, "회사", "최종_유추선종"])
 summary = summary.sort_values([period_sort_col, "회사", "최종_유추선종"])
@@ -960,7 +1041,7 @@ with tab_overview:
     if active_labels:
         st.caption("선택: " + " | ".join(active_labels))
 
-    render_metrics(metric_slot, selected_metric_view)
+    render_metrics(metric_slot, selected_metric_view, period_sort_col, period_label)
 
     overview_table = selected_summary[
         [period_col, "회사", "최종_유추선종", "수주건수", "수주_선박수", "계약금액_억원", "척당_평균단가_억원"]
@@ -985,6 +1066,7 @@ with tab_overview:
 
 with tab_backlog:
     backlog = backlog_snapshot(backlog_base, selected_periods, selected_companies)
+    backlog_kpi = backlog_snapshot(backlog_base, kpi_periods, selected_companies)
     st.caption(
         f"수주잔고는 공시일 범위 시작일 {backlog_start_date.date()}부터 "
         f"종료일+{BACKLOG_HORIZON_YEARS}년 {backlog_end_date.date()}까지 각 {period_label} 기간말 기준으로 계산합니다."
@@ -992,7 +1074,7 @@ with tab_backlog:
     if backlog.empty:
         st.warning("선택한 조건에 해당하는 수주잔고가 없습니다.")
     else:
-        latest_backlog, previous_backlog = latest_previous_slices(backlog)
+        latest_backlog, previous_backlog = latest_previous_slices(backlog_kpi)
         latest_ships = latest_backlog["수주_선박수"].sum()
         previous_ships = previous_backlog["수주_선박수"].sum() if not previous_backlog.empty else pd.NA
         latest_amount = latest_backlog["계약금액_조원"].sum()
@@ -1000,20 +1082,23 @@ with tab_backlog:
         latest_contracts = latest_backlog["수주건수"].sum()
         previous_contracts = previous_backlog["수주건수"].sum() if not previous_backlog.empty else pd.NA
         backlog_cols = st.columns(3)
-        backlog_cols[0].metric(
+        render_colored_metric(
+            backlog_cols[0],
             "최근 기준 잔고 선박 수",
             metric_value(latest_ships, "척", 0),
-            delta=metric_delta_pct(latest_ships, previous_ships, period_label),
+            metric_delta_display(latest_ships, previous_ships, period_label),
         )
-        backlog_cols[1].metric(
+        render_colored_metric(
+            backlog_cols[1],
             "최근 기준 잔고 금액",
             metric_value(latest_amount, "조원", 2),
-            delta=metric_delta_pct(latest_amount, previous_amount, period_label),
+            metric_delta_display(latest_amount, previous_amount, period_label),
         )
-        backlog_cols[2].metric(
+        render_colored_metric(
+            backlog_cols[2],
             "최근 기준 잔고 계약 수",
             f"{latest_contracts:,.0f}건",
-            delta=metric_delta_pct(latest_contracts, previous_contracts, period_label),
+            metric_delta_display(latest_contracts, previous_contracts, period_label),
         )
 
         backlog_company = (
@@ -1172,20 +1257,23 @@ with tab_backlog:
                     else pd.NA
                 )
                 ratio_cols = st.columns(3)
-                ratio_cols[0].metric(
+                render_colored_metric(
+                    ratio_cols[0],
                     "최근 기준 시가총액",
                     metric_value(latest_total_market_cap, "조원", 2),
-                    delta=metric_delta_pct(latest_total_market_cap, previous_total_market_cap, period_label),
+                    metric_delta_display(latest_total_market_cap, previous_total_market_cap, period_label),
                 )
-                ratio_cols[1].metric(
+                render_colored_metric(
+                    ratio_cols[1],
                     "최근 기준 수주잔고",
                     metric_value(latest_total_backlog, "조원", 2),
-                    delta=metric_delta_pct(latest_total_backlog, previous_total_backlog, period_label),
+                    metric_delta_display(latest_total_backlog, previous_total_backlog, period_label),
                 )
-                ratio_cols[2].metric(
+                render_colored_metric(
+                    ratio_cols[2],
                     "시총 / 수주잔고",
                     metric_value(latest_ratio, "배", 2),
-                    delta=metric_delta_pct(latest_ratio, previous_ratio, period_label),
+                    metric_delta_display(latest_ratio, previous_ratio, period_label),
                 )
 
                 market_cap_period_order = market_cap_compare["기간"].drop_duplicates().tolist()
