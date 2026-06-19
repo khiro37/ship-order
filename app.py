@@ -739,7 +739,7 @@ else:
     ])
 
 st.title("조선 수주 대시보드 (By 워렌넝구)")
-st.caption("공개 배포용 읽기 전용 대시보드입니다. DART API 키와 데이터 수집 코드는 포함되어 있지 않습니다.")
+st.caption("2020년 1월 1일부터 수집된 내역입니다.")
 
 with st.sidebar:
     st.header("필터")
