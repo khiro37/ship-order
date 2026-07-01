@@ -1,8 +1,11 @@
 import json
 import os
+import re
 import uuid
 from datetime import datetime
 from pathlib import Path
+from urllib.error import HTTPError, URLError
+from urllib.request import Request, urlopen
 
 import altair as alt
 import pandas as pd
@@ -15,6 +18,7 @@ MARKET_CAP_CSV_PATH = Path(__file__).with_name("ship_market_cap.csv")
 RUNTIME_DIR = Path(__file__).with_name("_runtime")
 REQUESTS_PATH = RUNTIME_DIR / "requests.csv"
 ANALYTICS_PATH = RUNTIME_DIR / "analytics.json"
+REQUEST_COMMENT_MARKER = "<!-- ship-order-dashboard-request:v1 -->"
 BACKLOG_HORIZON_YEARS = 4
 MARKET_CAP_BACKLOG_START_DATE = pd.Timestamp("2023-01-01")
 NO_TARGET_COMPANIES = {"대한조선", "한화오션"}
@@ -639,6 +643,13 @@ def save_json(path, data):
     path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
+def secret_value(name, default=""):
+    try:
+        return st.secrets.get(name, os.getenv(name, default))
+    except Exception:
+        return os.getenv(name, default)
+
+
 def visitor_id():
     if "_public_dashboard_visitor_id" not in st.session_state:
         st.session_state["_public_dashboard_visitor_id"] = uuid.uuid4().hex
@@ -675,25 +686,151 @@ def analytics_frame():
 
 def append_request(name, category, message):
     RUNTIME_DIR.mkdir(parents=True, exist_ok=True)
-    row = pd.DataFrame([{
+    row = {
+        "요청ID": uuid.uuid4().hex,
         "작성일시": runtime_now(),
         "작성자": str(name).strip(),
         "구분": category,
         "내용": str(message).strip(),
         "방문자ID": visitor_id(),
-    }])
+    }
+    append_request_to_github(row)
+    row_df = pd.DataFrame([row])
     if REQUESTS_PATH.exists():
         existing = pd.read_csv(REQUESTS_PATH, dtype=str).fillna("")
-        result = pd.concat([existing, row], ignore_index=True)
+        result = pd.concat([existing, row_df], ignore_index=True)
     else:
-        result = row
+        result = row_df
     result.to_csv(REQUESTS_PATH, index=False, encoding="utf-8-sig")
 
 
 def load_requests():
+    requests = load_requests_from_github()
     if not REQUESTS_PATH.exists():
-        return pd.DataFrame(columns=["작성일시", "작성자", "구분", "내용", "방문자ID"])
-    return pd.read_csv(REQUESTS_PATH, dtype=str).fillna("").sort_values("작성일시", ascending=False)
+        local = pd.DataFrame(columns=["요청ID", "작성일시", "작성자", "구분", "내용", "방문자ID"])
+    else:
+        local = pd.read_csv(REQUESTS_PATH, dtype=str).fillna("")
+        if "요청ID" not in local.columns:
+            local["요청ID"] = ""
+    combined = pd.concat([requests, local], ignore_index=True)
+    if combined.empty:
+        return pd.DataFrame(columns=["요청ID", "작성일시", "작성자", "구분", "내용", "방문자ID"])
+    combined["요청ID"] = combined["요청ID"].where(
+        combined["요청ID"].astype(str).str.strip().ne(""),
+        combined.apply(
+            lambda row: f"{row.get('작성일시', '')}|{row.get('작성자', '')}|{row.get('구분', '')}|{row.get('내용', '')}",
+            axis=1,
+        ),
+    )
+    return (
+        combined.drop_duplicates("요청ID", keep="first")
+        .sort_values("작성일시", ascending=False)
+        .reset_index(drop=True)
+    )
+
+
+def github_request_config():
+    token = secret_value("REQUESTS_GITHUB_TOKEN") or secret_value("GITHUB_TOKEN")
+    repo = secret_value("REQUESTS_GITHUB_REPO") or secret_value("GITHUB_REPOSITORY")
+    issue_number = str(secret_value("REQUESTS_ISSUE_NUMBER", "")).strip()
+    return token, repo, issue_number
+
+
+def github_requests_enabled():
+    token, repo, issue_number = github_request_config()
+    return bool(token and repo and issue_number)
+
+
+def github_api(method, path, payload=None):
+    token, repo, _ = github_request_config()
+    if not token or not repo:
+        raise RuntimeError("GitHub 요청 저장소 설정이 없습니다.")
+    url = f"https://api.github.com/repos/{repo}{path}"
+    data = None
+    headers = {
+        "Accept": "application/vnd.github+json",
+        "Authorization": f"Bearer {token}",
+        "X-GitHub-Api-Version": "2022-11-28",
+    }
+    if payload is not None:
+        data = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+        headers["Content-Type"] = "application/json"
+    request = Request(url, data=data, headers=headers, method=method)
+    try:
+        with urlopen(request, timeout=20) as response:
+            body = response.read().decode("utf-8", errors="replace")
+    except HTTPError as error:
+        detail = error.read().decode("utf-8", errors="replace")
+        raise RuntimeError(f"GitHub API 오류({error.code}): {detail}") from error
+    except URLError as error:
+        raise RuntimeError(f"GitHub API 연결 오류: {error.reason}") from error
+    return json.loads(body) if body else None
+
+
+def request_comment_body(row):
+    payload = {
+        "요청ID": row.get("요청ID", ""),
+        "작성일시": row.get("작성일시", ""),
+        "작성자": row.get("작성자", ""),
+        "구분": row.get("구분", ""),
+        "내용": row.get("내용", ""),
+        "방문자ID": row.get("방문자ID", ""),
+    }
+    return f"{REQUEST_COMMENT_MARKER}\n```json\n{json.dumps(payload, ensure_ascii=False)}\n```"
+
+
+def append_request_to_github(row):
+    if not github_requests_enabled():
+        return
+    _, _, issue_number = github_request_config()
+    github_api(
+        "POST",
+        f"/issues/{issue_number}/comments",
+        {"body": request_comment_body(row)},
+    )
+
+
+def parse_request_comment(body):
+    if REQUEST_COMMENT_MARKER not in body:
+        return None
+    match = re.search(r"```json\s*(\{.*?\})\s*```", body, flags=re.DOTALL)
+    if not match:
+        return None
+    try:
+        payload = json.loads(match.group(1))
+    except json.JSONDecodeError:
+        return None
+    return {
+        "요청ID": str(payload.get("요청ID", "")),
+        "작성일시": str(payload.get("작성일시", "")),
+        "작성자": str(payload.get("작성자", "")),
+        "구분": str(payload.get("구분", "")),
+        "내용": str(payload.get("내용", "")),
+        "방문자ID": str(payload.get("방문자ID", "")),
+    }
+
+
+def load_requests_from_github():
+    if not github_requests_enabled():
+        return pd.DataFrame(columns=["요청ID", "작성일시", "작성자", "구분", "내용", "방문자ID"])
+    _, _, issue_number = github_request_config()
+    rows = []
+    page = 1
+    while True:
+        comments = github_api(
+            "GET",
+            f"/issues/{issue_number}/comments?per_page=100&page={page}",
+        )
+        if not comments:
+            break
+        for comment in comments:
+            parsed = parse_request_comment(str(comment.get("body", "")))
+            if parsed:
+                rows.append(parsed)
+        if len(comments) < 100:
+            break
+        page += 1
+    return pd.DataFrame(rows, columns=["요청ID", "작성일시", "작성자", "구분", "내용", "방문자ID"])
 
 
 def admin_password():
@@ -1827,7 +1964,10 @@ with tab_request:
                     st.success("요청이 저장되었습니다.")
                 except Exception as error:
                     st.error(f"요청 저장 중 오류가 발생했습니다: {error}")
-    st.caption("요청 내용은 대시보드 원본 데이터와 분리된 런타임 파일에만 저장됩니다.")
+    if github_requests_enabled():
+        st.caption("요청 내용은 관리자 확인용 GitHub Issue에 누적 저장됩니다.")
+    else:
+        st.caption("요청 저장소가 설정되지 않아 런타임 파일에 임시 저장됩니다. 영구 보관하려면 관리자에게 GitHub 요청 저장소 설정을 요청해 주세요.")
 
 with tab_admin:
     st.subheader("관리자 모드")
@@ -1842,12 +1982,14 @@ with tab_admin:
             st.success("관리자 모드가 활성화되었습니다.")
             stats = analytics_frame()
             requests = load_requests()
+            request_store_status = "GitHub Issue 영구 저장" if github_requests_enabled() else "런타임 파일 임시 저장"
 
             metric_cols = st.columns(4)
             metric_cols[0].metric("총 조회수", f"{int(stats['조회수'].sum()) if not stats.empty else 0:,}")
             metric_cols[1].metric("최근 일자 조회수", f"{int(stats.iloc[0]['조회수']) if not stats.empty else 0:,}")
             metric_cols[2].metric("최근 일자 이용자수", f"{int(stats.iloc[0]['이용자수']) if not stats.empty else 0:,}")
             metric_cols[3].metric("누적 요청", f"{len(requests):,}")
+            st.caption(f"요청 저장 방식: {request_store_status}")
 
             st.subheader("일간 조회 통계")
             st.dataframe(stats, width="stretch", hide_index=True)
