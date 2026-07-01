@@ -33,7 +33,21 @@ ADMIN_PASSWORD = "원하는_관리자_비밀번호"
 
 관리자 탭에서는 일간 조회수, 일간 이용자수, 요청 목록을 확인할 수 있습니다.
 
-현재 조회 통계와 요청 목록은 앱 런타임 파일에 저장됩니다. Streamlit Cloud 재시작 또는 재배포 시 초기화될 수 있으므로, 영구 보관이 필요하면 Google Sheets, Supabase, Firebase 같은 외부 저장소를 연결하세요.
+조회 통계는 앱 런타임 파일에 저장되므로 Streamlit Cloud 재시작 또는 재배포 시 초기화될 수 있습니다.
+
+요청 목록을 영구 보관하려면 GitHub Issue 댓글 저장소를 설정하세요. 공개 사용자가 요청을 작성하면 지정한 Issue에 append-only 댓글로 저장되고, 관리자 탭은 해당 Issue 댓글을 다시 불러옵니다. 작성자 화면에는 삭제 기능이 없고, 런타임 파일이 초기화되어도 GitHub Issue에 남은 요청은 관리자에게 계속 보입니다.
+
+1. GitHub 저장소에 요청 보관용 Issue를 하나 만듭니다.
+2. GitHub fine-grained personal access token을 만들고 이 저장소의 Issues read/write 권한을 부여합니다.
+3. Streamlit Cloud의 App settings > Secrets에 아래 값을 추가합니다.
+
+```toml
+REQUESTS_GITHUB_TOKEN = "github_pat_xxx"
+REQUESTS_GITHUB_REPO = "khiro37/ship-order"
+REQUESTS_ISSUE_NUMBER = "요청_보관용_issue_번호"
+```
+
+위 설정이 없으면 요청은 기존처럼 런타임 CSV에 임시 저장됩니다.
 
 ## 데이터 업데이트 방식
 
