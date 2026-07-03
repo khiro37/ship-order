@@ -288,15 +288,31 @@ class TextExtractor(HTMLParser):
         return text.strip()
 
 
+HTTP_RETRY_COUNT = int(os.getenv("HTTP_RETRY_COUNT", "4"))
+HTTP_TIMEOUT_SECONDS = int(os.getenv("HTTP_TIMEOUT_SECONDS", "60"))
+
+
 def fetch_bytes(url, params):
     request_url = f"{url}?{urlencode(params)}"
-    try:
-        with urlopen(request_url, timeout=30) as response:
-            return response.read()
-    except HTTPError as e:
-        raise RuntimeError(f"HTTP 오류: {e.code} {e.reason}") from e
-    except URLError as e:
-        raise RuntimeError(f"네트워크 오류: {e.reason}") from e
+    last_error = None
+    for attempt in range(1, HTTP_RETRY_COUNT + 1):
+        try:
+            with urlopen(request_url, timeout=HTTP_TIMEOUT_SECONDS) as response:
+                return response.read()
+        except HTTPError as e:
+            last_error = e
+            if e.code < 500 and e.code != 429:
+                break
+        except (TimeoutError, URLError) as e:
+            last_error = e
+        if attempt < HTTP_RETRY_COUNT:
+            wait_seconds = min(2 ** attempt, 10)
+            print(f"네트워크 재시도 {attempt}/{HTTP_RETRY_COUNT}: {last_error} ({wait_seconds}초 대기)")
+            time.sleep(wait_seconds)
+    if isinstance(last_error, HTTPError):
+        raise RuntimeError(f"HTTP 오류: {last_error.code} {last_error.reason}") from last_error
+    reason = getattr(last_error, "reason", last_error)
+    raise RuntimeError(f"네트워크 오류: {reason}") from last_error
 
 
 def post_json(url, params, headers=None):
@@ -307,13 +323,28 @@ def post_json(url, params, headers=None):
         headers=headers or {},
         method="POST",
     )
-    try:
-        with urlopen(request, timeout=30) as response:
-            raw = response.read()
-    except HTTPError as e:
-        raise RuntimeError(f"HTTP 오류: {e.code} {e.reason}") from e
-    except URLError as e:
-        raise RuntimeError(f"네트워크 오류: {e.reason}") from e
+    last_error = None
+    raw = None
+    for attempt in range(1, HTTP_RETRY_COUNT + 1):
+        try:
+            with urlopen(request, timeout=HTTP_TIMEOUT_SECONDS) as response:
+                raw = response.read()
+            break
+        except HTTPError as e:
+            last_error = e
+            if e.code < 500 and e.code != 429:
+                break
+        except (TimeoutError, URLError) as e:
+            last_error = e
+        if attempt < HTTP_RETRY_COUNT:
+            wait_seconds = min(2 ** attempt, 10)
+            print(f"네트워크 재시도 {attempt}/{HTTP_RETRY_COUNT}: {last_error} ({wait_seconds}초 대기)")
+            time.sleep(wait_seconds)
+    if last_error is not None and raw is None:
+        if isinstance(last_error, HTTPError):
+            raise RuntimeError(f"HTTP 오류: {last_error.code} {last_error.reason}") from last_error
+        reason = getattr(last_error, "reason", last_error)
+        raise RuntimeError(f"네트워크 오류: {reason}") from last_error
 
     text = raw.decode("utf-8", errors="replace")
     try:
