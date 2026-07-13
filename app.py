@@ -908,6 +908,10 @@ with st.sidebar:
     include_cancelled = st.toggle("계약해지 포함", value=False)
     show_unclassified = st.toggle("미분류 포함", value=True)
 
+if not selected_ship_types:
+    st.warning("선종을 하나 이상 선택해야 대시보드를 표시할 수 있습니다.")
+    st.stop()
+
 content_mask = df["최종_유추선종"].isin(selected_ship_types)
 if not include_cancelled:
     content_mask &= ~df["해지여부"]
