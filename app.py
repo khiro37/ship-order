@@ -921,16 +921,26 @@ with st.sidebar:
     show_unclassified = st.toggle("미분류 포함", value=True)
 
 if not selected_years:
-    st.warning("공시연도를 하나 이상 선택해야 대시보드를 표시할 수 있습니다.")
-    st.stop()
+    selected_years = years
 
 if not selected_companies:
-    st.warning("회사를 하나 이상 선택해야 대시보드를 표시할 수 있습니다.")
-    st.stop()
+    selected_companies = companies
 
 if not selected_ship_types:
-    st.warning("선종을 하나 이상 선택해야 대시보드를 표시할 수 있습니다.")
-    st.stop()
+    selected_ship_types = ship_types
+
+filter_signature = uuid.uuid5(
+    uuid.NAMESPACE_DNS,
+    "|".join(
+        [
+            ",".join(map(str, selected_years)),
+            ",".join(map(str, selected_companies)),
+            ",".join(map(str, selected_ship_types)),
+            str(include_cancelled),
+            str(show_unclassified),
+        ]
+    ),
+).hex[:10]
 
 content_mask = df["최종_유추선종"].isin(selected_ship_types)
 if not include_cancelled:
@@ -1067,7 +1077,7 @@ with tab_overview:
         amount_event = st.altair_chart(
             amount_chart,
             width="stretch",
-            key=f"trend_amount_{period_label}",
+            key=f"trend_amount_{period_label}_{filter_signature}",
             on_select="rerun",
             selection_mode="trend_amount_select",
         )
@@ -1122,7 +1132,7 @@ with tab_overview:
         delivery_event = st.altair_chart(
             delivery_chart,
             width="stretch",
-            key=f"trend_delivery_{period_label}_{delivery_metric}",
+            key=f"trend_delivery_{period_label}_{delivery_metric}_{filter_signature}",
             on_select="rerun",
             selection_mode="trend_delivery_select",
         )
@@ -1170,7 +1180,7 @@ with tab_overview:
     ship_type_event = st.altair_chart(
         ship_type_amount_chart,
         width="stretch",
-        key=f"trend_type_{period_label}",
+        key=f"trend_type_{period_label}_{filter_signature}",
         on_select="rerun",
         selection_mode="trend_type_select",
     )
@@ -1313,7 +1323,7 @@ with tab_backlog:
         backlog_company_event = st.altair_chart(
             backlog_company_chart,
             width="stretch",
-            key=f"backlog_company_{period_label}_{backlog_metric}",
+            key=f"backlog_company_{period_label}_{backlog_metric}_{filter_signature}",
             on_select="rerun",
             selection_mode="backlog_company_select",
         )
@@ -1839,7 +1849,7 @@ with tab_price:
     price_event = st.altair_chart(
         price_chart,
         width="stretch",
-        key=f"price_chart_{period_label}_{st.session_state.get(price_reset_key, 0)}",
+        key=f"price_chart_{period_label}_{filter_signature}_{st.session_state.get(price_reset_key, 0)}",
         on_select="rerun",
         selection_mode="price_ship_select",
     )
