@@ -705,13 +705,19 @@ def append_request(name, category, message):
 
 
 def load_requests():
-    requests = load_requests_from_github()
+    try:
+        requests = load_requests_from_github()
+    except Exception:
+        requests = pd.DataFrame(columns=["요청ID", "작성일시", "작성자", "구분", "내용", "방문자ID"])
     if not REQUESTS_PATH.exists():
         local = pd.DataFrame(columns=["요청ID", "작성일시", "작성자", "구분", "내용", "방문자ID"])
     else:
-        local = pd.read_csv(REQUESTS_PATH, dtype=str).fillna("")
-        if "요청ID" not in local.columns:
-            local["요청ID"] = ""
+        try:
+            local = pd.read_csv(REQUESTS_PATH, dtype=str).fillna("")
+            if "요청ID" not in local.columns:
+                local["요청ID"] = ""
+        except Exception:
+            local = pd.DataFrame(columns=["요청ID", "작성일시", "작성자", "구분", "내용", "방문자ID"])
     combined = pd.concat([requests, local], ignore_index=True)
     if combined.empty:
         return pd.DataFrame(columns=["요청ID", "작성일시", "작성자", "구분", "내용", "방문자ID"])
@@ -840,7 +846,10 @@ def admin_password():
         return os.getenv("ADMIN_PASSWORD", "")
 
 
-analytics_snapshot = update_analytics()
+try:
+    analytics_snapshot = update_analytics()
+except Exception:
+    analytics_snapshot = {"daily": {}}
 
 
 if not CSV_PATH.exists():
@@ -848,6 +857,9 @@ if not CSV_PATH.exists():
     st.stop()
 
 df = load_data(str(CSV_PATH), CSV_PATH.stat().st_mtime)
+if df.empty:
+    st.error("표시할 수주 데이터가 없습니다. ship_order_summary.csv 내용을 확인해 주세요.")
+    st.stop()
 if TARGET_CSV_PATH.exists():
     targets = load_targets(str(TARGET_CSV_PATH), TARGET_CSV_PATH.stat().st_mtime)
 else:
@@ -908,6 +920,14 @@ with st.sidebar:
     include_cancelled = st.toggle("계약해지 포함", value=False)
     show_unclassified = st.toggle("미분류 포함", value=True)
 
+if not selected_years:
+    st.warning("공시연도를 하나 이상 선택해야 대시보드를 표시할 수 있습니다.")
+    st.stop()
+
+if not selected_companies:
+    st.warning("회사를 하나 이상 선택해야 대시보드를 표시할 수 있습니다.")
+    st.stop()
+
 if not selected_ship_types:
     st.warning("선종을 하나 이상 선택해야 대시보드를 표시할 수 있습니다.")
     st.stop()
@@ -943,6 +963,10 @@ delivery_company_mask = company_mask_with_hhi_merger(df, "최종_계약기간_�
 delivery_analysis_mask = content_mask & delivery_company_mask & date_mask & ~df["최종_유추선종"].isin(ANALYSIS_EXCLUDED_SHIP_TYPES)
 delivery_overview_view = apply_hhi_merger_by_date(df.loc[delivery_analysis_mask].copy(), "최종_계약기간_종료일_dt")
 backlog_base = df.loc[content_mask & ~df["최종_유추선종"].isin(ANALYSIS_EXCLUDED_SHIP_TYPES)].copy()
+
+if raw_view.empty and view.empty and backlog_base.empty:
+    st.warning("현재 필터 조건에 해당하는 데이터가 없습니다. 필터를 조정해 주세요.")
+    st.stop()
 
 metric_slot = st.container()
 
