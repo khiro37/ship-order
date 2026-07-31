@@ -4128,10 +4128,11 @@ def collect_market_cap(companies=None):
 
 
 TASK_ALIASES = {
-    "all": {"orders", "monthly", "quarterly", "segment", "cost", "delivery", "marketcap", "forecast", "dashboard"},
+    "all": {"orders", "monthly", "quarterly", "segment", "cost", "delivery", "marketcap", "dashboard"},
     "daily": {"orders", "marketcap", "dashboard"},
-    "monthly-run": {"monthly", "forecast", "dashboard"},
-    "quarterly-run": {"quarterly", "segment", "cost", "delivery", "forecast", "dashboard"},
+    "monthly-run": {"monthly", "dashboard"},
+    "quarterly-run": {"quarterly", "segment", "cost", "delivery", "dashboard"},
+    "forecast-run": {"forecast", "dashboard"},
 }
 
 
@@ -4148,6 +4149,7 @@ def parse_args():
             "daily",
             "monthly-run",
             "quarterly-run",
+            "forecast-run",
             "orders",
             "monthly",
             "quarterly",
@@ -4159,8 +4161,8 @@ def parse_args():
             "dashboard",
         ],
         help=(
-            "실행할 작업. 예: --tasks orders, --tasks monthly forecast, "
-            "--tasks quarterly segment cost delivery marketcap forecast"
+            "실행할 작업. 예: --tasks orders, --tasks monthly, "
+            "--tasks forecast 또는 --tasks forecast-run"
         ),
     )
     parser.add_argument(
@@ -4352,6 +4354,8 @@ def collect_orders_and_targets(corp_rows, companies):
 def main():
     args = parse_args()
     tasks = selected_tasks(args.tasks)
+    if args.force_forecast or os.getenv("RUN_FINANCIAL_FORECAST") == "1":
+        tasks.add("forecast")
     companies = filter_companies(args.companies)
     if not companies:
         raise RuntimeError("실행 대상 회사가 없습니다.")
