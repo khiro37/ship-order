@@ -40,11 +40,11 @@ jobs:
             exit 1
           fi
 
-      - name: Update DART order data
-        run: python update_orders.py --tasks orders --no-dashboard
+      - name: Update DART order and market cap data
+        run: python update_orders.py --tasks daily --no-dashboard
 
       - name: Commit updated data
         uses: stefanzweifel/git-auto-commit-action@v5
         with:
           commit_message: "Update ship order data"
-          file_pattern: "ship_order_summary.csv ship_order_targets.csv"
+          file_pattern: "ship_order_summary.csv ship_order_targets.csv ship_market_cap.csv"
