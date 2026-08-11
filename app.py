@@ -411,6 +411,20 @@ def metric_delta_display(current, previous, period_label):
     return {"text": f"→ {prefix} +0.0%", "color": "#5f6368", "bg": "#f1f3f4"}
 
 
+def metric_delta_amount_display(current, previous, period_label, suffix="", decimals=0):
+    current = pd.to_numeric(pd.Series([current]), errors="coerce").iloc[0]
+    previous = pd.to_numeric(pd.Series([previous]), errors="coerce").iloc[0]
+    if pd.isna(current) or pd.isna(previous):
+        return None
+    change = current - previous
+    prefix = PERIOD_DELTA_PREFIX.get(period_label, "직전대비")
+    if change > 0:
+        return {"text": f"↑ {prefix} +{change:,.{decimals}f}{suffix}", "color": "#d93025", "bg": "#fde8e7"}
+    if change < 0:
+        return {"text": f"↓ {prefix} {change:,.{decimals}f}{suffix}", "color": "#1a73e8", "bg": "#e8f0fe"}
+    return {"text": f"→ {prefix} +0{suffix}", "color": "#5f6368", "bg": "#f1f3f4"}
+
+
 def render_colored_metric(column, label, value, delta=None):
     delta_html = ""
     if delta:
@@ -1261,7 +1275,7 @@ with tab_backlog:
             backlog_cols[0],
             "최근 기준 잔고 선박 수",
             metric_value(latest_ships, "척", 0),
-            metric_delta_display(latest_ships, previous_ships, period_label),
+            metric_delta_amount_display(latest_ships, previous_ships, period_label, "척", 0),
         )
         render_colored_metric(
             backlog_cols[1],
@@ -1273,7 +1287,7 @@ with tab_backlog:
             backlog_cols[2],
             "최근 기준 잔고 계약 수",
             f"{latest_contracts:,.0f}건",
-            metric_delta_display(latest_contracts, previous_contracts, period_label),
+            metric_delta_amount_display(latest_contracts, previous_contracts, period_label, "건", 0),
         )
 
         backlog_company = (
