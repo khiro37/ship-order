@@ -4378,7 +4378,10 @@ def main():
     if "delivery" in tasks:
         updated = collect_delivery_volume(corp_rows, companies.keys()) or updated
     if "marketcap" in tasks:
-        updated = collect_market_cap(companies.keys()) or updated
+        try:
+            updated = collect_market_cap(companies.keys()) or updated
+        except Exception as error:
+            print(f"시가총액 수집 실패(수주 업데이트는 계속 진행): {error}")
 
     if "forecast" in tasks:
         if updated or args.force_forecast or os.getenv("RUN_FINANCIAL_FORECAST") == "1":

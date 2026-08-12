@@ -1,2 +1,2 @@
-# update_orders.py runs the DART order update with Python standard libraries.
-# Keep this file for GitHub Actions compatibility if update dependencies are added later.
+pandas
+pyarrow
