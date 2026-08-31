@@ -290,6 +290,11 @@ class TextExtractor(HTMLParser):
 
 HTTP_RETRY_COUNT = int(os.getenv("HTTP_RETRY_COUNT", "4"))
 HTTP_TIMEOUT_SECONDS = int(os.getenv("HTTP_TIMEOUT_SECONDS", "60"))
+DART_TEMPORARY_ERROR_STATUSES = {"800"}
+
+
+class TemporaryDartUnavailable(RuntimeError):
+    pass
 
 
 def fetch_bytes(url, params):
@@ -353,7 +358,7 @@ def post_json(url, params, headers=None):
         raise RuntimeError(f"JSON 응답 파싱 실패: {text[:300]}") from e
 
 
-def parse_dart_error(raw):
+def parse_dart_error_detail(raw):
     try:
         error = ET.fromstring(raw.decode("utf-8", errors="ignore"))
     except ET.ParseError:
@@ -361,8 +366,26 @@ def parse_dart_error(raw):
 
     status = error.findtext("status")
     message = error.findtext("message")
+    if not status and not message:
+        return None
+    return status or "unknown", message or "알 수 없는 오류"
+
+
+def format_dart_error(status, message):
+    return f"DART API 오류(status={status}): {message}"
+
+
+def is_temporary_dart_error(status, message=""):
+    return status in DART_TEMPORARY_ERROR_STATUSES or "시스템 점검" in str(message)
+
+
+def parse_dart_error(raw):
+    detail = parse_dart_error_detail(raw)
+    if not detail:
+        return None
+    status, message = detail
     if status or message:
-        return f"DART API 오류(status={status or 'unknown'}): {message or '알 수 없는 오류'}"
+        return format_dart_error(status, message)
     return None
 
 
@@ -389,17 +412,34 @@ def decode_document_bytes(raw):
 
 
 def get_corp_codes():
-    raw = fetch_bytes(
-        "https://opendart.fss.or.kr/api/corpCode.xml",
-        {"crtfc_key": API_KEY},
-    )
+    last_dart_error = None
+    for attempt in range(1, HTTP_RETRY_COUNT + 1):
+        raw = fetch_bytes(
+            "https://opendart.fss.or.kr/api/corpCode.xml",
+            {"crtfc_key": API_KEY},
+        )
 
-    if not zipfile.is_zipfile(io.BytesIO(raw)):
-        dart_error = parse_dart_error(raw)
-        if dart_error:
+        if zipfile.is_zipfile(io.BytesIO(raw)):
+            break
+
+        dart_detail = parse_dart_error_detail(raw)
+        if dart_detail:
+            status, message = dart_detail
+            dart_error = format_dart_error(status, message)
+            if is_temporary_dart_error(status, message):
+                last_dart_error = dart_error
+                if attempt < HTTP_RETRY_COUNT:
+                    wait_seconds = min(2 ** attempt, 10)
+                    print(f"DART 일시 중단 재시도 {attempt}/{HTTP_RETRY_COUNT}: {dart_error} ({wait_seconds}초 대기)")
+                    time.sleep(wait_seconds)
+                    continue
+                raise TemporaryDartUnavailable(dart_error)
             raise RuntimeError(dart_error)
+
         preview = raw.decode("utf-8", errors="ignore")[:500]
         raise RuntimeError(f"corpCode.xml 응답이 ZIP이 아닙니다: {preview}")
+    else:
+        raise TemporaryDartUnavailable(last_dart_error or "DART API가 일시적으로 응답하지 않습니다.")
 
     with zipfile.ZipFile(io.BytesIO(raw)) as z:
         xml = z.read(z.namelist()[0])
@@ -453,6 +493,8 @@ def search_filings(corp_code, start=SEARCH_START_DATE, end=SEARCH_END_DATE):
         message = root.findtext("message")
 
         if status not in ("000", "013"):
+            if is_temporary_dart_error(status, message):
+                raise TemporaryDartUnavailable(format_dart_error(status, message))
             raise RuntimeError(f"DART API 오류(status={status}): {message}")
 
         for item in root.findall("list"):
@@ -476,8 +518,12 @@ def download_document_text(rcept_no):
         {"crtfc_key": API_KEY, "rcept_no": rcept_no},
     )
 
-    dart_error = parse_dart_error(raw)
-    if dart_error:
+    dart_detail = parse_dart_error_detail(raw)
+    if dart_detail:
+        status, message = dart_detail
+        dart_error = format_dart_error(status, message)
+        if is_temporary_dart_error(status, message):
+            raise TemporaryDartUnavailable(dart_error)
         raise RuntimeError(dart_error)
 
     texts = []
@@ -4362,21 +4408,35 @@ def main():
 
     print(f"실행 작업: {', '.join(sorted(tasks))}")
     print(f"실행 회사: {', '.join(companies.keys())}")
-    corp_rows = get_corp_codes()
     updated = False
+    dart_tasks = tasks & {"orders", "monthly", "quarterly", "segment", "cost", "delivery"}
+    corp_rows = None
 
-    if "orders" in tasks:
-        updated = collect_orders_and_targets(corp_rows, companies) or updated
-    if "monthly" in tasks:
-        updated = collect_monthly_sales(corp_rows, companies.keys()) or updated
-    if "quarterly" in tasks:
-        updated = collect_quarterly_financials(corp_rows, companies.keys()) or updated
-    if "segment" in tasks:
-        updated = collect_segment_revenue(corp_rows, companies.keys()) or updated
-    if "cost" in tasks:
-        updated = collect_cost_structure(corp_rows, companies.keys()) or updated
-    if "delivery" in tasks:
-        updated = collect_delivery_volume(corp_rows, companies.keys()) or updated
+    if dart_tasks:
+        try:
+            corp_rows = get_corp_codes()
+        except TemporaryDartUnavailable as error:
+            print(f"::warning title=DART temporary unavailable::{error}. DART 기반 작업({', '.join(sorted(dart_tasks))})은 이번 실행에서 건너뜁니다.")
+
+    if corp_rows is not None:
+        try:
+            if "orders" in tasks:
+                updated = collect_orders_and_targets(corp_rows, companies) or updated
+            if "monthly" in tasks:
+                updated = collect_monthly_sales(corp_rows, companies.keys()) or updated
+            if "quarterly" in tasks:
+                updated = collect_quarterly_financials(corp_rows, companies.keys()) or updated
+            if "segment" in tasks:
+                updated = collect_segment_revenue(corp_rows, companies.keys()) or updated
+            if "cost" in tasks:
+                updated = collect_cost_structure(corp_rows, companies.keys()) or updated
+            if "delivery" in tasks:
+                updated = collect_delivery_volume(corp_rows, companies.keys()) or updated
+        except TemporaryDartUnavailable as error:
+            print(f"::warning title=DART temporary unavailable::{error}. 남은 DART 기반 작업은 이번 실행에서 건너뜁니다.")
+    elif dart_tasks:
+        print("DART 점검/일시 중단으로 수주/실적 DART 작업을 생략했습니다. 기존 CSV는 유지됩니다.")
+
     if "marketcap" in tasks:
         try:
             updated = collect_market_cap(companies.keys()) or updated

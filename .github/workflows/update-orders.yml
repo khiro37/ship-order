@@ -18,6 +18,8 @@ jobs:
       DART_API_KEY: ${{ secrets.DART_API_KEY }}
       PYTHONUTF8: "1"
       FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
+      HTTP_RETRY_COUNT: "5"
+      HTTP_TIMEOUT_SECONDS: "90"
 
     steps:
       - name: Checkout
@@ -41,7 +43,20 @@ jobs:
           fi
 
       - name: Update DART order and market cap data
-        run: python update_orders.py --tasks daily --no-dashboard
+        run: |
+          for attempt in 1 2 3; do
+            echo "Update attempt ${attempt}/3"
+            if python update_orders.py --tasks daily --no-dashboard; then
+              exit 0
+            fi
+            status=$?
+            if [ "$attempt" -lt 3 ]; then
+              sleep_seconds=$((attempt * 60))
+              echo "Update failed with exit code ${status}. Retry after ${sleep_seconds}s."
+              sleep "$sleep_seconds"
+            fi
+          done
+          exit "$status"
 
       - name: Commit updated data
         uses: stefanzweifel/git-auto-commit-action@v5
